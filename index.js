@@ -1,100 +1,425 @@
 const qrcode = require("qrcode-terminal");
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const { Client } = require("whatsapp-web.js");
 const express = require("express");
-const cors = require("cors");
 
 const app = express();
+
 app.use(express.json());
-app.use(cors());
+
+const PORT = 3000;
+// const BOT_SECRET = process.env.BOT_SECRET;
+const BOT_SECRET = "chave-teste";
+
+
+// ==========================
+// CONFIGURAÇÃO
+// ==========================
+
+if (!BOT_SECRET) {
+  console.error("❌ BOT_SECRET não configurado.");
+  process.exit(1);
+}
+
+let whatsappPronto = false;
+
+
+// ==========================
+// CLIENTE WHATSAPP
+// ==========================
 
 const client = new Client({
-  authStrategy: new LocalAuth(),
+
   puppeteer: {
     headless: true,
+
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--single-process",
     ],
   },
+
 });
+
+
+const delay = (ms) =>
+  new Promise((resolve) =>
+    setTimeout(resolve, ms)
+  );
+
+
+// ==========================
+// EVENTOS DO WHATSAPP
+// ==========================
 
 client.on("qr", (qr) => {
-  console.log("📲 Escaneie o QR Code abaixo:");
-  qrcode.generate(qr, { small: true });
+
+  console.log(
+    "📲 Escaneie o QR Code abaixo:"
+  );
+
+  qrcode.generate(
+    qr,
+    {
+      small: true,
+    }
+  );
+
 });
+
+
+client.on("authenticated", () => {
+
+  console.log(
+    "🔐 WhatsApp autenticado."
+  );
+
+});
+
+
+client.on(
+  "loading_screen",
+  (percent, message) => {
+
+    console.log(
+      `⌛ Carregando: ${percent}% - ${message}`
+    );
+
+  }
+);
+
 
 client.on("ready", () => {
-  console.log("✅ Tudo certo! WhatsApp conectado e API de disparo pronta.");
+
+  whatsappPronto = true;
+
+  console.log(
+    "✅ WhatsApp conectado e bot pronto."
+  );
+
 });
 
-client.on("disconnected", (reason) => {
-  console.log("⚠️ O WhatsApp foi desconectado:", reason);
-});
 
-client.initialize();
+client.on(
+  "auth_failure",
+  (mensagem) => {
 
-const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+    whatsappPronto = false;
 
-async function enviarMensagemHumanizada(grupoId, mensagemFormatada) {
-  try {
-    console.log(`⏳ [Background] Iniciando rotina humanizada para: ${grupoId}`);
+    console.error(
+      "❌ Falha na autenticação:",
+      mensagem
+    );
 
-    const chat = await client.getChatById(grupoId);
-
-    await delay(1500);
-
-    await chat.sendStateTyping();
-
-    await delay(5000);
-
-    await client.sendMessage(grupoId, mensagemFormatada);
-
-    console.log(`✉️ [Background] Mensagem enviada com sucesso para: ${grupoId}`);
-  } catch (error) {
-
-    console.error("❌ [Background] Falha crítica ao enviar mensagem pelo WhatsApp:", error);
   }
+);
+
+
+client.on(
+  "disconnected",
+  (reason) => {
+
+    whatsappPronto = false;
+
+    console.log(
+      "⚠️ WhatsApp desconectado:",
+      reason
+    );
+
+  }
+);
+
+
+// ==========================
+// ENVIO DE MENSAGEM
+// ==========================
+
+async function enviarMensagemHumanizada(
+  grupoId,
+  mensagem
+) {
+
+  if (!whatsappPronto) {
+
+    throw new Error(
+      "WhatsApp ainda não está conectado."
+    );
+
+  }
+
+
+  console.log(
+    `⏳ Preparando envio para: ${grupoId}`
+  );
+
+
+  const chat =
+    await client.getChatById(grupoId);
+
+
+  if (!chat.isGroup) {
+
+    throw new Error(
+      "O identificador informado não pertence a um grupo."
+    );
+
+  }
+
+
+  // Pequeno intervalo antes de começar
+  await delay(1500);
+
+
+  // Mostra "digitando..."
+  await chat.sendStateTyping();
+
+
+  // Simula digitação por 5 segundos
+  await delay(5000);
+
+
+  // Para o estado de digitação
+  await chat.clearState();
+
+
+  // Envia a mensagem
+  await chat.sendMessage(
+    mensagem,
+    {
+      waitUntilMsgSent: true,
+    }
+  );
+
+
+  console.log(
+    `✉️ Mensagem enviada com sucesso para: ${grupoId}`
+  );
+
+
+  // Intervalo antes do próximo envio
+  await delay(5000);
+
 }
 
-app.post("/enviar-aviso", async (req, res) => {
-  try {
-    const { grupoId, titulo, descricao, dataEvento } = req.body;
 
-    if (!grupoId || !titulo || !dataEvento) {
-      return res.status(400).json({ error: "Dados obrigatórios ausentes (grupoId, titulo ou dataEvento)." });
+// ==========================
+// STATUS DO BOT
+// ==========================
+
+app.get(
+  "/status",
+  (req, res) => {
+
+    if (!whatsappPronto) {
+
+      return res.status(503).json({
+        pronto: false,
+        mensagem:
+          "WhatsApp ainda não está conectado.",
+      });
+
     }
 
-    const mensagemFormatada =
-      `📢 *AVISO* 📢\n\n` +
-      `🗓️ *Evento:* ${titulo}\n` +
-      `📅 *Data/Hora:* ${dataEvento}\n\n` +
-      `📝 *Descrição:* ${descricao || "Sem descrição informada."}`;
 
-    enviarMensagemHumanizada(grupoId, mensagemFormatada);
-
-    return res.status(202).json({ 
-      status: "Sucesso", 
-      message: "Evento salvo e aviso agendado para envio!" 
+    return res.status(200).json({
+      pronto: true,
+      mensagem:
+        "Bot conectado ao WhatsApp.",
     });
 
-  } catch (error) {
-    console.error("❌ Erro na rota de envio:", error);
-    return res.status(500).json({ error: "Ocorreu um erro interno ao processar a requisição." });
   }
-});
+);
 
-client.on("message", async (msg) => {
-  if (msg.body === "!idgrupo") {
-    const chat = await msg.getChat();
-    if (chat.isGroup) {
-      await msg.reply(`O ID deste grupo é:\n${msg.from}`);
+
+// ==========================
+// ENDPOINT USADO PELO SPRING
+// ==========================
+
+app.post(
+  "/enviar-aviso",
+  async (req, res) => {
+
+    // ==========================
+    // SEGREDO SPRING -> NODE
+    // ==========================
+
+    const secret =
+      req.headers["x-bot-secret"];
+
+
+    if (secret !== BOT_SECRET) {
+
+      return res.status(401).json({
+        sucesso: false,
+        erro: "Chave inválida.",
+      });
+
     }
-  }
-});
 
-app.listen(3000, () => {
-  console.log("🚀 Servidor Node pronto para receber ordens na porta 3000");
-});
+
+    // ==========================
+    // DADOS DO ENVIO
+    // ==========================
+
+    const {
+      identificadorGrupo,
+      mensagem,
+    } = req.body;
+
+
+    if (
+      !identificadorGrupo ||
+      !mensagem
+    ) {
+
+      return res.status(400).json({
+        sucesso: false,
+        erro:
+          "identificadorGrupo e mensagem são obrigatórios.",
+      });
+
+    }
+
+
+    // ==========================
+    // WHATSAPP DISPONÍVEL?
+    // ==========================
+
+    if (!whatsappPronto) {
+
+      return res.status(503).json({
+        sucesso: false,
+        erro:
+          "WhatsApp ainda não está conectado.",
+      });
+
+    }
+
+
+    // ==========================
+    // TENTATIVA DE ENVIO
+    // ==========================
+
+    try {
+
+      await enviarMensagemHumanizada(
+        identificadorGrupo,
+        mensagem
+      );
+
+
+      return res.status(200).json({
+        sucesso: true,
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        "❌ Erro ao enviar mensagem:",
+        error
+      );
+
+
+      return res.status(500).json({
+        sucesso: false,
+        erro:
+          error.message ||
+          "Erro desconhecido ao enviar mensagem.",
+      });
+
+    }
+
+  }
+);
+
+
+// ==========================
+// COMANDO !idgrupo
+// ==========================
+
+client.on(
+  "message",
+  async (msg) => {
+
+    if (msg.body !== "!idgrupo") {
+      return;
+    }
+
+
+    try {
+
+      const chat =
+        await msg.getChat();
+
+
+      if (!chat.isGroup) {
+
+        await msg.reply(
+          "Este comando deve ser usado dentro de um grupo."
+        );
+
+        return;
+      }
+
+
+      await msg.reply(
+        `O ID deste grupo é:\n${msg.from}`
+      );
+
+
+    } catch (error) {
+
+      console.error(
+        "❌ Erro ao obter ID do grupo:",
+        error
+      );
+
+    }
+
+  }
+);
+
+
+// ==========================
+// SERVIDOR HTTP
+// ==========================
+
+app.listen(
+  PORT,
+  () => {
+
+    console.log(
+      `🚀 API do bot rodando na porta ${PORT}`
+    );
+
+  }
+);
+
+
+// ==========================
+// ENCERRAMENTO
+// ==========================
+
+process.on(
+  "SIGINT",
+  () => {
+
+    console.log(
+      "\n🛑 Bot encerrado."
+    );
+
+    whatsappPronto = false;
+
+    process.exit(0);
+
+  }
+);
+
+
+// ==========================
+// INICIALIZAÇÃO WHATSAPP
+// ==========================
+
+client.initialize();
